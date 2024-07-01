@@ -16,19 +16,19 @@ import (
 )
 
 var (
-	keysPassword = os.Getenv("KEYS_PASSWORD")
-	apiPrivateKey = ucrypto.LoadPrivateKey("API_PRIVATE_KEY", keysPassword)
+	keysPassword      = os.Getenv("KEYS_PASSWORD")
+	apiPrivateKey     = ucrypto.LoadPrivateKey("API_PRIVATE_KEY", keysPassword)
 	frontendPublicKey = ucrypto.LoadPublicKey("FRONTEND_PUBLIC_KEY")
-	backendPublicKey = ucrypto.LoadPublicKey("BACKEND_PUBLIC_KEY")
+	backendPublicKey  = ucrypto.LoadPublicKey("BACKEND_PUBLIC_KEY")
 )
 
-
-type Response struct {
-	Message  string `json:"message" xml:"message"`
+type LoginResponse struct {
+	Token string `json:"token" xml:"token"`
 }
 
-type Request struct {
-	Message  string `json:"message" xml:"message"`
+type LoginRequest struct {
+	Email    string `json:"email" xml:"email"`
+	Password string `json:"password" xml:"password"`
 }
 
 type GrpcClient struct {
@@ -44,61 +44,57 @@ func NewGrpcClient(address string, opts []grpc.DialOption) (*GrpcClient, error) 
 	return &GrpcClient{conn: connection}, nil
 }
 
-func (gc *GrpcClient) TestFunc(msg string) (*out.TestResponse, error) {
-	testClient := out.NewTestClient(gc.conn)
-	encryptedMessage := ucrypto.Encrypt(backendPublicKey, []byte(msg))
-	encodedMessage := ucrypto.EncodeBase64(encryptedMessage)
+func (gc *GrpcClient) AuthenticateLogin(req *LoginRequest) (*out.Token, error) {
+	authClient := out.NewAuthenticationClient(gc.conn)
+	encodedEmail := ucrypto.EncryptEncode(backendPublicKey, []byte(req.Email))
+	encodedPassword:= ucrypto.EncryptEncode(backendPublicKey, []byte(req.Password))
 
-	res, err := testClient.TestFunc(context.Background(), &out.TestRequest{Message: encodedMessage})
+	res, err := authClient.AuthenticateLogin(context.Background(), &out.Login{Email: encodedEmail, Password: encodedPassword})
 	return res, err
 }
 
+func LoginRoute(gc *GrpcClient) (func(c echo.Context) error) {
+	return func(c echo.Context) error {
+		r := new(LoginRequest)
+		if err := c.Bind(r); err != nil {
+			return c.JSON(http.StatusBadRequest, &LoginResponse{
+				Token: "",
+			})
+		}
+
+		decryptedEmail := ucrypto.DecodeDecrypt(apiPrivateKey, r.Email)
+		decryptedPassword := ucrypto.DecodeDecrypt(apiPrivateKey, r.Password)
+
+		response, err := gc.AuthenticateLogin(&LoginRequest{
+			Email: string(decryptedEmail),
+			Password: string(decryptedPassword),
+		})
+		if err != nil {
+			log.Fatalln(err.Error())
+		}
+
+		responseToken := response.GetToken()
+
+		returnToken := ucrypto.DecodeDecryptFromEncryptEncodeTo(apiPrivateKey, frontendPublicKey, responseToken)
+
+		return c.JSON(http.StatusOK, &LoginResponse{
+			Token: returnToken,
+		})
+	}
+}
+
 func Server() {
-	gc,err := NewGrpcClient("localhost:50051", []grpc.DialOption{
+	gc, err := NewGrpcClient("localhost:50051", []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	})
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
 
-
 	e := echo.New()
 	e.Use(middleware.CORS())
 	log.Println("Starting Echo HTTP Server")
-	e.GET("/api/test", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, &Response{
-			Message: "GO GET RESPONSE",
-		})
-	})
 
-	e.POST("/api/test", func(c echo.Context) error {
-		r := new(Request)
-		if err := c.Bind(r); err != nil {
-			return c.JSON(http.StatusBadRequest, &Response{
-				Message: "BAD REQUEST",
-			})
-		}
-
-		decodedMessage := ucrypto.DecodeBase64(r.Message)
-		decryptedMessage := ucrypto.Decrypt(apiPrivateKey, decodedMessage)
-
-
-		response, err := gc.TestFunc(string(decryptedMessage))
-		if err != nil {
-			log.Fatalln(err.Error())
-		}
-
-		reponseMessage := response.GetMessage()
-		decodedResponseMessage := ucrypto.DecodeBase64(reponseMessage)
-		decryptedResponseMessage := ucrypto.Decrypt(apiPrivateKey, decodedResponseMessage)
-
-		returnEncryptedMessage := ucrypto.Encrypt(frontendPublicKey, decryptedResponseMessage)
-		encodedReturnMessage := ucrypto.EncodeBase64(returnEncryptedMessage)
-
-
-		return c.JSON(http.StatusOK, &Response{
-			Message: encodedReturnMessage,
-		})
-	})
+	e.POST("/api/login", LoginRoute(gc))
 	e.Logger.Fatal(e.Start(":1323"))
 }

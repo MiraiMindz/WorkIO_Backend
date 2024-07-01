@@ -65,3 +65,27 @@ func EncodeBase64(data []byte) string {
 
 	return encodedData
 }
+
+func DecryptFromEncryptTo(privateKey *rsa.PrivateKey, publicKey *rsa.PublicKey, data []byte) []byte {
+	decData := Decrypt(privateKey, data)
+	encData := Encrypt(publicKey, decData)
+	return encData
+}
+
+func DecodeDecrypt(privateKey *rsa.PrivateKey, data string) []byte {
+	decodedData := DecodeBase64(data)
+	decryptedData := Decrypt(privateKey, decodedData)
+	return decryptedData
+}
+
+func EncryptEncode(publicKey *rsa.PublicKey, data []byte) string {
+	encryptedData := Encrypt(publicKey, data)
+	encodedData := EncodeBase64(encryptedData)
+	return encodedData
+}
+
+func DecodeDecryptFromEncryptEncodeTo(privateKey *rsa.PrivateKey, publicKey *rsa.PublicKey, data string) string {
+	decryptedDecodedData := DecodeDecrypt(privateKey, data)
+	encryptedEncodedData := EncryptEncode(publicKey, decryptedDecodedData)
+	return encryptedEncodedData
+}

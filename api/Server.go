@@ -31,6 +31,17 @@ type LoginRequest struct {
 	Password string `json:"password" xml:"password"`
 }
 
+type SignUpRequest struct {
+	Email     string `json:"email" xml:"email"`
+	Password  string `json:"password" xml:"password"`
+	FirstName string `json:"firstName" xml:"firstName"`
+	LastName  string `json:"lastName" xml:"lastName"`
+}
+
+type SignUpResponse struct {
+	Token string `json:"token" xml:"token"`
+}
+
 type GrpcClient struct {
 	conn *grpc.ClientConn
 }
@@ -47,13 +58,25 @@ func NewGrpcClient(address string, opts []grpc.DialOption) (*GrpcClient, error) 
 func (gc *GrpcClient) AuthenticateLogin(req *LoginRequest) (*out.Token, error) {
 	authClient := out.NewAuthenticationClient(gc.conn)
 	encodedEmail := ucrypto.EncryptEncode(backendPublicKey, []byte(req.Email))
-	encodedPassword:= ucrypto.EncryptEncode(backendPublicKey, []byte(req.Password))
+	encodedPassword := ucrypto.EncryptEncode(backendPublicKey, []byte(req.Password))
 
 	res, err := authClient.AuthenticateLogin(context.Background(), &out.Login{Email: encodedEmail, Password: encodedPassword})
 	return res, err
 }
 
-func LoginRoute(gc *GrpcClient) (func(c echo.Context) error) {
+func (gc *GrpcClient) AuthenticateSignUp(req *SignUpRequest) (*out.Token, error) {
+	authClient := out.NewAuthenticationClient(gc.conn)
+	encodedEmail := ucrypto.EncryptEncode(backendPublicKey, []byte(req.Email))
+	encodedPassword := ucrypto.EncryptEncode(backendPublicKey, []byte(req.Password))
+	encodedFirstName := ucrypto.EncryptEncode(backendPublicKey, []byte(req.FirstName))
+	encodedLastName := ucrypto.EncryptEncode(backendPublicKey, []byte(req.LastName))
+
+	res, err := authClient.AuthenticateSignUp(context.Background(), &out.SignUp{Email: encodedEmail, Password: encodedPassword, FirstName: encodedFirstName, LastName: encodedLastName})
+	return res, err
+}
+
+
+func LoginRoute(gc *GrpcClient) func(c echo.Context) error {
 	return func(c echo.Context) error {
 		r := new(LoginRequest)
 		if err := c.Bind(r); err != nil {
@@ -66,8 +89,44 @@ func LoginRoute(gc *GrpcClient) (func(c echo.Context) error) {
 		decryptedPassword := ucrypto.DecodeDecrypt(apiPrivateKey, r.Password)
 
 		response, err := gc.AuthenticateLogin(&LoginRequest{
-			Email: string(decryptedEmail),
+			Email:    string(decryptedEmail),
 			Password: string(decryptedPassword),
+		})
+		if err != nil {
+			log.Fatalln(err.Error())
+		}
+
+		responseToken := response.GetToken()
+		log.Println(responseToken)
+
+		returnToken := ucrypto.DecodeDecryptFromEncryptEncodeTo(apiPrivateKey, frontendPublicKey, responseToken)
+		log.Println(returnToken)
+
+		return c.JSON(http.StatusOK, &LoginResponse{
+			Token: returnToken,
+		})
+	}
+}
+
+func SignUpRoute(gc *GrpcClient) func(c echo.Context) error {
+	return func(c echo.Context) error {
+		r := new(SignUpRequest)
+		if err := c.Bind(r); err != nil {
+			return c.JSON(http.StatusBadRequest, &LoginResponse{
+				Token: "",
+			})
+		}
+
+		decryptedEmail := ucrypto.DecodeDecrypt(apiPrivateKey, r.Email)
+		decryptedPassword := ucrypto.DecodeDecrypt(apiPrivateKey, r.Password)
+		decryptedFirstName := ucrypto.DecodeDecrypt(apiPrivateKey, r.FirstName)
+		decryptedLastName := ucrypto.DecodeDecrypt(apiPrivateKey, r.LastName)
+
+		response, err := gc.AuthenticateSignUp(&SignUpRequest{
+			Email:    string(decryptedEmail),
+			Password: string(decryptedPassword),
+			FirstName: string(decryptedFirstName),
+			LastName: string(decryptedLastName),
 		})
 		if err != nil {
 			log.Fatalln(err.Error())
@@ -96,5 +155,6 @@ func Server() {
 	log.Println("Starting Echo HTTP Server")
 
 	e.POST("/api/login", LoginRoute(gc))
+	e.POST("/api/signup", SignUpRoute(gc))
 	e.Logger.Fatal(e.Start(":1323"))
 }
